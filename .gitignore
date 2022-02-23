@@ -1,6 +1,7 @@
 build
 .idea
 .gradle
+lib
 
 *DS_Store
 
