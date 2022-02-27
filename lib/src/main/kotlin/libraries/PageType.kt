@@ -87,9 +87,9 @@ class Page {
     enum class CrawlerStatus {
         Crawled,
         NotCrawled,
-        AwaitingPagerank,
         DoesNotExist,
         Error,
+        Unwanted,
     }
 
     @Serializable

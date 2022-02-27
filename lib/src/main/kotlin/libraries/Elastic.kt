@@ -5,13 +5,15 @@ import co.elastic.clients.elasticsearch._types.SortOrder
 import co.elastic.clients.elasticsearch._types.mapping.ObjectProperty
 import co.elastic.clients.elasticsearch._types.mapping.Property
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
-import co.elastic.clients.elasticsearch.async_search.ElasticsearchAsyncSearchClient
+import co.elastic.clients.elasticsearch._types.query_dsl.Query
 import co.elastic.clients.elasticsearch.core.*
+import co.elastic.clients.elasticsearch.core.bulk.IndexOperation
 import co.elastic.clients.elasticsearch.core.search.Hit
 import co.elastic.clients.elasticsearch.indices.*
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import co.elastic.clients.transport.ElasticsearchTransport
 import co.elastic.clients.transport.rest_client.RestClientTransport
+import co.elastic.clients.util.ObjectBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
@@ -26,8 +28,8 @@ import org.elasticsearch.client.RestClient
 data class Credentials(val userName: String, val password: String)
 data class Address(val hostname: String, val port: Int)
 
-class Elastic(credentials: Credentials, address: Address, val index: String) {
-    val client: ElasticsearchClient
+open class Elastic(credentials: Credentials, address: Address, val index: String) {
+    private val client: ElasticsearchClient
 
     init {
         val credentialsProvider: CredentialsProvider = BasicCredentialsProvider()
@@ -67,32 +69,39 @@ class Elastic(credentials: Credentials, address: Address, val index: String) {
 
     suspend fun docsByUrlOrNull(url: String, batchSize: Long = 10): List<Hit<Page.PageType>>? = coroutineScope {
         val search: SearchResponse<Page.PageType> = withContext(Dispatchers.Default) {
-            client.search(docsByUrlRequest(url, batchSize), Page.PageType::class.java)
+            search(docsByUrlRequest(url, batchSize))
         }
         val hits = search.hits().hits()
         return@coroutineScope hits.ifEmpty { null }
     }
 
-//    suspend fun docsByUrlOrNullBulk(urls: List<String>, batchSize: Long = 10) {
-//        val req = MsearchRequest.of {
-//            it.index(index)
-//            it.searches {
-//                it.body {
-////                    it.query { query ->
-////                        query.ids { ids ->
-////                            ids.values(urls)
-////                        }
-////                        query.term { term ->
-////                            term.field("address.url").value { value ->
-////                                value.stringValue(url)
-////                            }
-////                        }
-////                    }
-//                }
-//            }
-//        }
-//        client.msearch(req, Page.PageType::class.java)
-//    }
+    fun docsByUrlOrNullBulk(urls: List<String>, batchSize: Long = 10): MsearchResponse<Page.PageType>? {
+        fun searchesBuilder(req: MsearchRequest.Builder, url: String): ObjectBuilder<MsearchRequest> =
+            req.searches { searches ->
+                searches.header {
+                    it.index(index)
+                }
+                searches.body {
+                    it.size(batchSize.toInt())
+                    it.query { query ->
+                        query.ids { ids ->
+                            ids.values(urls)
+                        }
+                        query.term { term ->
+                            term.field("address.url").value { value ->
+                                value.stringValue(url)
+                            }
+                        }
+                    }
+                }
+            }
+
+        val req = MsearchRequest.of { builder ->
+            urls.forEach { searchesBuilder(builder, it) }
+            builder.index(index)
+        }
+        return client.msearch(req, Page.PageType::class.java)
+    }
 
 
     fun docsByUrlRequest(url: String, batchSize: Long = 10): SearchRequest = SearchRequest.of {
@@ -106,32 +115,27 @@ class Elastic(credentials: Credentials, address: Address, val index: String) {
         }
     }
 
+    data class PageById(val page: Page.PageType, val id: String?)
 
-    suspend fun getGlobalSinkRank(): Double = coroutineScope {
-        val search: SearchResponse<Page.PageType> = withContext(Dispatchers.Default) {
-            client.search(SearchRequest.of {
-                it.index(index)
-                it.query { query ->
-                    query.bool { bool ->
-                        bool.mustNot { mustNot ->
-                            mustNot.exists { exists ->
-                                exists.field("body.links.internal")
-                            }
-                            mustNot.exists { exists ->
-                                exists.field("body.links.external")
-                            }
-                        }
-                    }
-                }
-                it.aggregations("total") { agg ->
-                    agg.sum { sum ->
-                        sum.field("inferredData.ranks.pagerank")
-                    }
-                }
-            }, Page.PageType::class.java)
+    fun indexDocsBulkByIds(docs: List<PageById>): BulkResponse {
+        fun indexBuilder(req: BulkRequest.Builder, doc: PageById) {
+            req.operations { operations ->
+                operations.index(IndexOperation.of<Page.PageType> { index ->
+                    if (doc.id != null) index.id(doc.id)
+                    index.document(doc.page)
+                    index.index(this.index)
+                })
+            }
         }
-        return@coroutineScope search.aggregations()["total"]?.sum()?.value() ?: 0.0
+
+        val req = BulkRequest.of { builder ->
+            docs.forEach { indexBuilder(builder, it) }
+            builder.index(index)
+        }
+        return client.bulk(req)
     }
+
+    fun indexDocsBulk(pages: List<Page.PageType>) = indexDocsBulkByIds(pages.map { PageById(it, null) })
 
 
     suspend fun getAllDocsCount(): Long = coroutineScope {
@@ -151,53 +155,8 @@ class Elastic(credentials: Credentials, address: Address, val index: String) {
     }
 
 
-    suspend fun putDocBacklinkInfoByUrl(
-        docUrl: String,
-        originBacklink: Page.BackLink,
-    ): Unit = coroutineScope {
-        val docsByUrls = docsByUrlOrNull(docUrl)
-        val source = docsByUrls?.firstOrNull()?.source() ?: Page.PageType(docUrl)
-        val id = docsByUrls?.firstOrNull()?.id()
-
-        val backLinksWithOrigin: List<Page.BackLink> =
-            (source.inferredData.backLinks + originBacklink).distinctBy { it.source }
-
-        source.inferredData.backLinks = backLinksWithOrigin
-        source.inferredData.domainName = getDomain(docUrl)
-
-        indexPage(source, id = id)
-    }
-
-
-    suspend fun maxValueByFieldAndCrawlerStatus(
-        field: String,
-        crawlerStatus: Page.CrawlerStatus,
-        batchSize: Long = 10,
-    ): List<Hit<Page.PageType>>? = coroutineScope {
-        val search: SearchResponse<Page.PageType> = withContext(Dispatchers.Default) {
-            client.search(SearchRequest.of {
-                it.index(index)
-                it.sort { sort ->
-                    sort.field { fieldSort ->
-                        fieldSort.field(field)
-                        fieldSort.order(SortOrder.Desc)
-                    }
-                }
-                it.size(batchSize.toInt())
-                it.query { query ->
-                    query.bool { bool ->
-                        bool.must { must ->
-                            must.term { term ->
-                                term.field("crawlerStatus").value { termValue ->
-                                    termValue.stringValue(crawlerStatus.toString())
-                                }
-                            }
-                        }
-                    }
-                }
-            }, Page.PageType::class.java)
-        }
-        return@coroutineScope search.hits().hits()
+    suspend fun search(searchRequest: SearchRequest): SearchResponse<Page.PageType> = coroutineScope {
+        return@coroutineScope withContext(Dispatchers.IO) { client.search(searchRequest, Page.PageType::class.java) }
     }
 
 
@@ -218,9 +177,7 @@ class Elastic(credentials: Credentials, address: Address, val index: String) {
 
         fun keywordProperty(name: String, parent: ObjectProperty.Builder): ObjectProperty.Builder? {
             return parent.properties(name, Property.of { property ->
-                property.keyword { keyword ->
-                    keyword.ignoreAbove(65536 - 1)
-                }
+                property.keyword { it }
             })
         }
 
@@ -350,35 +307,36 @@ class Elastic(credentials: Credentials, address: Address, val index: String) {
         client.indices().create(mappingRequest)
     }
 
-    suspend fun deleteIndex(index: String = this.index) {
+    fun deleteIndex(index: String = this.index) {
         client.indices().delete(DeleteIndexRequest.of {
             it.index(index)
         })
     }
 
-    private fun searchAfterUrlRequest(batchSize: Long, afterUrl: String?): SearchRequest = SearchRequest.of { searchReq ->
-        searchReq.index(index)
-        searchReq.query { query ->
-            query.bool { bool ->
-                bool.must { must ->
-                    must.exists {
-                        it.field("address.url")
+    private fun searchAfterUrlRequest(batchSize: Long, afterUrl: String?): SearchRequest =
+        SearchRequest.of { searchReq ->
+            searchReq.index(index)
+            searchReq.query { query ->
+                query.bool { bool ->
+                    bool.must { must ->
+                        must.exists {
+                            it.field("address.url")
+                        }
                     }
                 }
             }
-        }
-        if (afterUrl != null) searchReq.searchAfter(afterUrl)
-        searchReq.size(batchSize.toInt())
-        searchReq.sort { sort ->
-            sort.field {
-                it.field("address.url")
-                it.order(SortOrder.Asc)
+            if (afterUrl != null) searchReq.searchAfter(afterUrl)
+            searchReq.size(batchSize.toInt())
+            searchReq.sort { sort ->
+                sort.field {
+                    it.field("address.url")
+                    it.order(SortOrder.Asc)
+                }
             }
         }
-    }
 
-    fun searchAfterUrl(batchSize: Long, url: String?) =
-        client.search(searchAfterUrlRequest(batchSize, url), Page.PageType::class.java)
+    suspend fun searchAfterUrl(batchSize: Long, url: String?) =
+        search(searchAfterUrlRequest(batchSize, url))
 
 }
 
@@ -415,13 +373,32 @@ class Alias(private val client: ElasticsearchClient, private val index: String) 
 
 //suspend fun main() {
 //    val es = Elastic(Credentials("elastic", "testerino"), Address("localhost", 9200), "search")
-////    es.deleteIndex("test15")
-////    es.putMapping()
-////    es.alias.create("test12", "ttt")
-////    es.alias.delete("test12", "ttt")
-//    for (hit in es.searchAfterUrl(10, "http://babeljs.io").hits().hits()) {
-//        println(hit.source()?.address?.url)
+//    val builder = SearchRequest.of { s ->
+//        s.index(es.index)
+//        s.query { query ->
+//            query.bool { bool ->
+//                bool.must(listOf(Query.of { query ->
+//                    query.multiMatch { mm ->
+//                        mm.query("youtube")
+//                        mm.fields(
+//                            "metadata.title^2",
+//                            "metadata.description",
+//                            "inferredData.backLinks.text^2",
+//                            "body.headings.h1",
+//                        )
+//                        mm.fuzziness("3")
+//                    }
+//                }, Query.of { query ->
+//                    query.rankFeature {
+//                        it.field("inferredData.ranks.smartRank")
+//                        it.linear { it }
+//                    }
+//                }))
+//            }
+//        }
 //    }
+//    val a = es.search(builder)
+//    a.hits()?.hits()?.forEach { println(it.source()?.address?.url) }
 //    println("done")
 //
 //}
