@@ -159,6 +159,10 @@ open class Elastic(credentials: Credentials, address: Address, val index: String
         return@coroutineScope withContext(Dispatchers.IO) { client.search(searchRequest, Page.PageType::class.java) }
     }
 
+//    suspend fun mSearch(BulkRequest: MsearchRequest): MsearchResponse<Page.PageType>? = coroutineScope {
+//        return@coroutineScope withContext(Dispatchers.IO) { client.msearch(BulkRequest, Page.PageType::class.java) }
+//    }
+
 
     suspend fun putMapping(numberOfShards: Int = 1, numberOfReplicas: Int = 0): CreateIndexResponse = coroutineScope {
 
@@ -313,30 +317,57 @@ open class Elastic(credentials: Credentials, address: Address, val index: String
         })
     }
 
-    private fun searchAfterUrlRequest(batchSize: Long, afterUrl: String?): SearchRequest =
+    private fun searchAfterRequest(batchSize: Long, after: String?, field: String, sortOrder: SortOrder, must: (Query.Builder) -> ObjectBuilder<Query>, reqFields: List<String>? = null): SearchRequest =
         SearchRequest.of { searchReq ->
             searchReq.index(index)
+            if (reqFields != null) {
+                searchReq.source { source ->
+                    source.filter {
+                        it.includes(reqFields)
+                    }
+                    source
+                }
+            }
             searchReq.query { query ->
                 query.bool { bool ->
                     bool.must { must ->
-                        must.exists {
-                            it.field("address.url")
-                        }
+                        must(must)
                     }
                 }
             }
-            if (afterUrl != null) searchReq.searchAfter(afterUrl)
+            if (after != null) searchReq.searchAfter(after)
             searchReq.size(batchSize.toInt())
             searchReq.sort { sort ->
                 sort.field {
-                    it.field("address.url")
-                    it.order(SortOrder.Asc)
+                    it.field(field)
+                    it.order(sortOrder)
                 }
             }
         }
 
     suspend fun searchAfterUrl(batchSize: Long, url: String?) =
-        search(searchAfterUrlRequest(batchSize, url))
+        search(searchAfterRequest(batchSize, url, "address.url", SortOrder.Asc, { must ->
+            must.exists {
+                it.field("address.url")
+            }
+        }))
+
+    suspend fun searchAfterUrl(batchSize: Long, url: String?, fields: List<String>?) =
+        search(searchAfterRequest(batchSize, url, "address.url", SortOrder.Asc, { must ->
+            must.exists {
+                it.field("address.url")
+            }
+        }, fields))
+
+    suspend fun searchAfterPagerank(batchSize: Long, pagerank: Double?) =
+        search(searchAfterRequest(batchSize, pagerank?.toString(), "inferredData.ranks.pagerank", SortOrder.Desc, { must ->
+            must.match { match ->
+                match.field("crawlerStatus")
+                match.query {
+                    it.stringValue(Page.CrawlerStatus.NotCrawled.toString())
+                }
+            }
+        }))
 
 }
 
@@ -371,34 +402,17 @@ class Alias(private val client: ElasticsearchClient, private val index: String) 
 }
 
 
-//suspend fun main() {
-//    val es = Elastic(Credentials("elastic", "testerino"), Address("localhost", 9200), "search")
-//    val builder = SearchRequest.of { s ->
-//        s.index(es.index)
-//        s.query { query ->
-//            query.bool { bool ->
-//                bool.must(listOf(Query.of { query ->
-//                    query.multiMatch { mm ->
-//                        mm.query("youtube")
-//                        mm.fields(
-//                            "metadata.title^2",
-//                            "metadata.description",
-//                            "inferredData.backLinks.text^2",
-//                            "body.headings.h1",
-//                        )
-//                        mm.fuzziness("3")
-//                    }
-//                }, Query.of { query ->
-//                    query.rankFeature {
-//                        it.field("inferredData.ranks.smartRank")
-//                        it.linear { it }
-//                    }
-//                }))
-//            }
-//        }
-//    }
-//    val a = es.search(builder)
-//    a.hits()?.hits()?.forEach { println(it.source()?.address?.url) }
-//    println("done")
-//
-//}
+suspend fun main() {
+    val es = Elastic(
+        Credentials("elastic", "Qex-+JtMxqNDgH3G073d"),
+        Address("localhost", 9200),
+        "search"
+    )
+
+    es.searchAfterUrl(10, null, listOf("address.url")).hits().hits().forEach {
+        println(it.source()?.address?.url)
+    }
+//    println(a?.size)
+    println("done")
+
+}
