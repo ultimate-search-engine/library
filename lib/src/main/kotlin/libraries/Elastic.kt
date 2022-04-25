@@ -28,7 +28,7 @@ import org.elasticsearch.client.RestClient
 data class Credentials(val userName: String, val password: String)
 data class Address(val hostname: String, val port: Int)
 
-open class Elastic(credentials: Credentials, address: Address, val index: String) {
+open class Elastic(credentials: Credentials, address: Address, private val index: String) {
     private val client: ElasticsearchClient
 
     init {
@@ -51,79 +51,83 @@ open class Elastic(credentials: Credentials, address: Address, val index: String
     }
 
 
+    @Suppress("Unused")
     val alias = Alias(client, index)
 
-    suspend fun indexPage(page: Page.PageType, id: String? = null): IndexResponse = coroutineScope {
-        withContext(
-            Dispatchers.Default
-        ) { client.index(indexRequest(page, id)) }
+    @Suppress("Unused")
+    suspend fun add(page: Page.Page, id: String? = null): IndexResponse = withContext(Dispatchers.IO) {
+        client.index(addRequest(page, id))
     }
 
 
-    fun indexRequest(page: Page.PageType, id: String? = null) = IndexRequest.of<Page.PageType> {
+    @Suppress("Unused")
+    fun addRequest(page: Page.Page, id: String? = null): IndexRequest<Page.Page> = IndexRequest.of {
         if (id != null) it.id(id)
         it.index(index)
         it.document(page)
     }
 
 
-    suspend fun docsByUrlOrNull(url: String, batchSize: Long = 10): List<Hit<Page.PageType>>? = coroutineScope {
-        val search: SearchResponse<Page.PageType> = withContext(Dispatchers.Default) {
-            search(docsByUrlRequest(url, batchSize))
-        }
+    @Suppress("Unused")
+    suspend fun getByUrlOrNull(url: String, batchSize: Int = 10): Hit<Page.Page>? = withContext(Dispatchers.IO) {
+        val search: SearchResponse<Page.Page> = search(docsByUrlRequest(url, batchSize))
+
         val hits = search.hits().hits()
-        return@coroutineScope hits.ifEmpty { null }
+        return@withContext hits.firstOrNull()
     }
 
-    fun docsByUrlOrNullBulk(urls: List<String>, batchSize: Long = 10): MsearchResponse<Page.PageType>? {
-        fun searchesBuilder(req: MsearchRequest.Builder, url: String): ObjectBuilder<MsearchRequest> =
-            req.searches { searches ->
-                searches.header {
-                    it.index(index)
-                }
-                searches.body {
-                    it.size(batchSize.toInt())
-                    it.query { query ->
-                        query.ids { ids ->
-                            ids.values(urls)
-                        }
-                        query.term { term ->
-                            term.field("address.url").value { value ->
-                                value.stringValue(url)
-                            }
-                        }
-                    }
-                }
-            }
-
-        val req = MsearchRequest.of { builder ->
-            urls.forEach { searchesBuilder(builder, it) }
-            builder.index(index)
-        }
-        return client.msearch(req, Page.PageType::class.java)
-    }
-
-
-    fun docsByUrlRequest(url: String, batchSize: Long = 10): SearchRequest = SearchRequest.of {
-        it.size(batchSize.toInt())
+    @Suppress("Unused")
+    fun docsByUrlRequest(url: String, batchSize: Int = 10): SearchRequest = SearchRequest.of {
+        it.size(batchSize)
         it.index(index).query { query ->
             query.term { term ->
-                term.field("address.url").value { value ->
+                term.field("url").value { value ->
                     value.stringValue(url)
                 }
             }
         }
     }
 
-    data class PageById(val page: Page.PageType, val id: String?)
+    @Suppress("Unused")
+    suspend fun getByUrlOrNullBulk(urls: List<String>, batchSize: Long = 10): MsearchResponse<Page.Page> =
+        withContext(Dispatchers.IO) {
+            fun searchesBuilder(req: MsearchRequest.Builder, url: String): ObjectBuilder<MsearchRequest> =
+                req.searches { searches ->
+                    searches.header {
+                        it.index(index)
+                    }
+                    searches.body {
+                        it.size(batchSize.toInt())
+                        it.query { query ->
+                            query.ids { ids ->
+                                ids.values(urls)
+                            }
+                            query.term { term ->
+                                term.field("url").value { value ->
+                                    value.stringValue(url)
+                                }
+                            }
+                        }
+                    }
+                }
 
-    fun indexDocsBulkByIds(docs: List<PageById>): BulkResponse {
+            val req = MsearchRequest.of { builder ->
+                urls.forEach { searchesBuilder(builder, it) }
+                builder.index(index)
+            }
+            return@withContext client.msearch(req, Page.Page::class.java)
+        }
+
+    data class PageById(val page: Page.Page, val id: String?)
+
+    @Suppress("Unused")
+    suspend fun addDocsBulkByIds(docs: List<PageById>): BulkResponse = withContext(Dispatchers.IO) {
         fun indexBuilder(req: BulkRequest.Builder, doc: PageById) {
             req.operations { operations ->
-                operations.index(IndexOperation.of<Page.PageType> { index ->
-                    if (doc.id != null) index.id(doc.id)
-                    index.document(doc.page)
-                    index.index(this.index)
+                operations.index(IndexOperation.of<Page.Page> { ind ->
+                    if (doc.id != null) ind.id(doc.id)
+                    ind.document(doc.page)
+                    ind.index(index)
                 })
             }
         }
@@ -132,20 +136,22 @@ open class Elastic(credentials: Credentials, address: Address, val index: String
             docs.forEach { indexBuilder(builder, it) }
             builder.index(index)
         }
-        return client.bulk(req)
+        return@withContext client.bulk(req)
     }
 
-    fun indexDocsBulk(pages: List<Page.PageType>) = indexDocsBulkByIds(pages.map { PageById(it, null) })
+    @Suppress("Unused")
+    suspend fun addDocsBulk(pages: List<Page.Page>) = addDocsBulkByIds(pages.map { PageById(it, null) })
 
 
-    suspend fun getAllDocsCount(): Long = coroutineScope {
+    @Suppress("Unused")
+    suspend fun count(): Long = coroutineScope {
         val search: CountRequest = CountRequest.of {
             it.index(index)
             it.query { query ->
                 query.bool { bool ->
                     bool.must { must ->
                         must.exists { exists ->
-                            exists.field("address.url")
+                            exists.field("url")
                         }
                     }
                 }
@@ -154,52 +160,47 @@ open class Elastic(credentials: Credentials, address: Address, val index: String
         return@coroutineScope client.count(search).count()
     }
 
-
-    suspend fun search(searchRequest: SearchRequest): SearchResponse<Page.PageType> = coroutineScope {
-        return@coroutineScope withContext(Dispatchers.IO) { client.search(searchRequest, Page.PageType::class.java) }
+    @Suppress("Unused")
+    suspend fun search(searchRequest: SearchRequest): SearchResponse<Page.Page> = coroutineScope {
+        return@coroutineScope withContext(Dispatchers.IO) { client.search(searchRequest, Page.Page::class.java) }
     }
 
-//    suspend fun mSearch(BulkRequest: MsearchRequest): MsearchResponse<Page.PageType>? = coroutineScope {
-//        return@coroutineScope withContext(Dispatchers.IO) { client.msearch(BulkRequest, Page.PageType::class.java) }
-//    }
-
-
+    @Suppress("Unused")
     suspend fun putMapping(numberOfShards: Int = 1, numberOfReplicas: Int = 0): CreateIndexResponse = coroutineScope {
 
-        fun complexMappingType(name: String, parent: ObjectProperty.Builder): ObjectProperty.Builder? {
-            return parent.properties(name) { property2 ->
-                property2.text { text ->
-                    text.analyzer("standard")
-                    text.fields("searchAsYouType", Property.of { field ->
-                        field.searchAsYouType { text ->
-                            text.analyzer("standard")
-                        }
-                    })
-                }
+        fun TypeMapping.Builder.field(
+            key: String, f: (Property.Builder) -> ObjectBuilder<Property>
+        ): TypeMapping.Builder = this.properties(key, f)
+
+        fun objectProperty(
+            typeMapping: Property.Builder, f: (ObjectProperty.Builder) -> ObjectProperty.Builder
+        ): ObjectBuilder<Property> = typeMapping.`object`(f)
+
+        fun ObjectProperty.Builder.field(
+            key: String, f: (Property.Builder) -> ObjectBuilder<Property>
+        ): ObjectProperty.Builder = this.properties(key, f)
+
+
+        fun Property.Builder.keyword() = this.keyword { it }
+
+        fun Property.Builder.text() = this.text { it }
+
+        fun Property.Builder.double() = this.double_ { it }
+
+        fun Property.Builder.rankComplex() = this.double_ { double_ ->
+            double_.fields("rankFeature", Property.of { field ->
+                field.rankFeature { it }
+            })
+        }
+
+//        fun objectMapping(name: String, parent: ObjectProperty.Builder, f: (ObjectProperty.Builder) -> ObjectProperty.Builder): ObjectProperty.Builder = typeMappingProperty(parent, name) { property ->
+//            objectProperty(property, f)
+//        }
+
+        fun Property.Builder.objectProperty(f: (ObjectProperty.Builder) -> ObjectProperty.Builder): ObjectBuilder<Property> =
+            `object` { object1 ->
+                f(object1)
             }
-        }
-
-        fun keywordProperty(name: String, parent: ObjectProperty.Builder): ObjectProperty.Builder? {
-            return parent.properties(name, Property.of { property ->
-                property.keyword { it }
-            })
-        }
-
-        fun textProperty(name: String, parent: ObjectProperty.Builder): ObjectProperty.Builder? {
-            return parent.properties(name, Property.of { property ->
-                property.text { text ->
-                    text.analyzer("standard")
-                }
-            })
-        }
-
-        fun doubleProperty(name: String, parent: ObjectProperty.Builder): ObjectProperty.Builder? {
-            return parent.properties(name, Property.of { property ->
-                property.double_ { double ->
-                    double.nullValue(0.0)
-                }
-            })
-        }
 
         val mappingRequest = CreateIndexRequest.of { indexRequest ->
             indexRequest.index(index)
@@ -216,172 +217,104 @@ open class Elastic(credentials: Credentials, address: Address, val index: String
 //                }
             }
             indexRequest.mappings(TypeMapping.of { typeMapping ->
-//                typeMapping.indexField(IndexField.of {
-//                    it.enabled(true)
-//                })
-                typeMapping.properties("metadata", Property.of { property ->
-                    property.`object` {
-                        complexMappingType("title", it)
-                        complexMappingType("description", it)
+                typeMapping.field("url") {
+                    it.keyword()
+                }
+                typeMapping.field("ranks") { ranks ->
+                    ranks.objectProperty { op ->
+                        op.field("pagerank") { it.rankComplex() }
+                        op.field("smartRank") { it.rankComplex() }
+                    }
+                }
+                typeMapping.field("content") { content ->
+                    content.objectProperty { op ->
+                        op.field("title") { it.text() }
+                        op.field("description") { it.text() }
+                        op.field("keywords") { it.text() }
+                        op.field("anchors") { it.text() }
+                        op.field("boldText") { it.text() }
 
-                        textProperty("openGraphTitle", it)
-                        textProperty("openGraphDescription", it)
-
-                        keywordProperty("openGraphImgURL", it)
-                        keywordProperty("type", it)
-                        keywordProperty("tags", it)
-                    }
-                })
-                typeMapping.properties("body", Property.of { property ->
-                    property.`object` { obj ->
-                        obj.properties("headings", Property.of { property ->
-                            property.`object` { obj ->
-                                complexMappingType("h1", obj)
-
-                                textProperty("h2", obj)
-                                textProperty("h3", obj)
-                                textProperty("h4", obj)
-                                textProperty("h5", obj)
-                                textProperty("h6", obj)
+                        op.field("headings") { headings ->
+                            headings.objectProperty { op ->
+                                op.field("h1") { it.text() }
+                                op.field("h2") { it.text() }
+                                op.field("h3") { it.text() }
+                                op.field("h4") { it.text() }
+                                op.field("h5") { it.text() }
+                                op.field("h6") { it.text() }
                             }
-                        })
-                        textProperty("article", obj)
-                        textProperty("boldText", obj)
-                        obj.properties("links", Property.of { property ->
-                            property.`object` { obj ->
-                                obj.properties("internal", Property.of { property ->
-                                    property.`object` { obj ->
-                                        textProperty("text", obj)
-                                        textProperty("href", obj)
-                                    }
-                                })
-                                obj.properties("external", Property.of { property ->
-                                    property.`object` { obj ->
-                                        textProperty("text", obj)
-                                        textProperty("href", obj)
-                                    }
-                                })
-                            }
-                        })
+                        }
+                        op.field("text") { it.text() }
                     }
-                })
-                typeMapping.properties("inferredData", Property.of { property ->
-                    property.`object` { obj ->
-                        obj.properties("backLinks", Property.of { property ->
-                            property.`object` { obj ->
-                                textProperty("text", obj)
-                                keywordProperty("source", obj)
-                            }
-                        })
-                        obj.properties("ranks", Property.of { property ->
-                            property.`object` { obj ->
-                                doubleProperty("pagerank", obj)
-                                obj.properties("smartRank", Property.of { property ->
-                                    property.rankFeature {
-                                        it.positiveScoreImpact(true)
-                                    }
-                                })
-                            }
-                        })
-                        obj.properties("domainName", Property.of { property ->
-                            property.text {
-                                it.analyzer("standard")
-                            }
-                        })
-                    }
-                })
-                typeMapping.properties("address", Property.of {
-                    it.`object` { obj ->
-                        keywordProperty("url", obj)
-                        textProperty("urlAsText", obj)
-                    }
-                })
-                typeMapping.properties("crawlerStatus", Property.of {
-                    it.keyword { keyword ->
-                        keyword.ignoreAbove(256)
-                    }
-                })
-                typeMapping.properties("crawlerTimestamp", Property.of {
-                    it.date { date ->
-                        date.nullValue("0")
-                    }
-                })
+                }
             })
         }
         client.indices().create(mappingRequest)
     }
 
-    fun deleteIndex(index: String = this.index) {
+    @Suppress("Unused")
+    suspend fun deleteIndex(index: String = this.index): DeleteIndexResponse = withContext(Dispatchers.IO) {
         client.indices().delete(DeleteIndexRequest.of {
             it.index(index)
         })
     }
 
-    private fun searchAfterRequest(batchSize: Long, after: String?, field: String, sortOrder: SortOrder, must: (Query.Builder) -> ObjectBuilder<Query>, reqFields: List<String>? = null): SearchRequest =
-        SearchRequest.of { searchReq ->
-            searchReq.index(index)
-            if (reqFields != null) {
-                searchReq.source { source ->
-                    source.filter {
-                        it.includes(reqFields)
-                    }
-                    source
+    private fun searchAfterRequest(
+        batchSize: Long,
+        after: String?,
+        field: String,
+        sortOrder: SortOrder,
+        must: (Query.Builder) -> ObjectBuilder<Query>,
+        reqFields: List<String>? = null
+    ): SearchRequest = SearchRequest.of { searchReq ->
+        searchReq.index(index)
+        if (reqFields != null) {
+            searchReq.source { source ->
+                source.filter {
+                    it.includes(reqFields)
                 }
+                source
             }
-            searchReq.query { query ->
-                query.bool { bool ->
-                    bool.must { must ->
-                        must(must)
-                    }
-                }
-            }
-            if (after != null) searchReq.searchAfter(after)
-            searchReq.size(batchSize.toInt())
-            searchReq.sort { sort ->
-                sort.field {
-                    it.field(field)
-                    it.order(sortOrder)
+        }
+        searchReq.query { query ->
+            query.bool { bool ->
+                bool.must { must ->
+                    must(must)
                 }
             }
         }
+        if (after != null) searchReq.searchAfter(after)
+        searchReq.size(batchSize.toInt())
+        searchReq.sort { sort ->
+            sort.field {
+                it.field(field)
+                it.order(sortOrder)
+            }
+        }
+    }
 
+    @Suppress("Unused")
     suspend fun searchAfterUrl(batchSize: Long, url: String?) =
-        search(searchAfterRequest(batchSize, url, "address.url", SortOrder.Asc, { must ->
+        search(searchAfterRequest(batchSize, url, "url", SortOrder.Asc, { must ->
             must.exists {
-                it.field("address.url")
+                it.field("url")
             }
         }))
-
-    suspend fun searchAfterUrl(batchSize: Long, url: String?, fields: List<String>?) =
-        search(searchAfterRequest(batchSize, url, "address.url", SortOrder.Asc, { must ->
-            must.exists {
-                it.field("address.url")
-            }
-        }, fields))
-
-    suspend fun searchAfterPagerank(batchSize: Long, pagerank: Double?) =
-        search(searchAfterRequest(batchSize, pagerank?.toString(), "inferredData.ranks.pagerank", SortOrder.Desc, { must ->
-            must.match { match ->
-                match.field("crawlerStatus")
-                match.query {
-                    it.stringValue(Page.CrawlerStatus.NotCrawled.toString())
-                }
-            }
-        }))
-
 }
 
 
 class Alias(private val client: ElasticsearchClient, private val index: String) {
 
-    fun create(alias: String) {
+    @Suppress("Unused")
+    suspend fun create(alias: String): PutAliasResponse = withContext(Dispatchers.IO) {
         client.indices().putAlias(PutAliasRequest.of {
             it.index(index)
             it.name(alias)
         })
     }
 
-    fun delete(alias: String) {
+    @Suppress("Unused")
+    suspend fun delete(alias: String) = withContext(Dispatchers.IO) {
         getIndexByAlias(alias).forEach { index ->
             client.indices().deleteAlias(DeleteAliasRequest.of {
                 it.index(index)
@@ -390,29 +323,25 @@ class Alias(private val client: ElasticsearchClient, private val index: String) 
         }
     }
 
-    fun getIndexByAlias(alias: String): MutableSet<String> {
-        return try {
+    @Suppress("Unused")
+    suspend fun getIndexByAlias(alias: String): Set<String> = withContext(Dispatchers.IO) {
+        return@withContext try {
             client.indices().getAlias(GetAliasRequest.of {
                 it.name(alias)
             }).result().keys
         } catch (e: Exception) {
             mutableSetOf(alias)
-        }
+        }.toSet()
     }
 }
 
 
 suspend fun main() {
     val es = Elastic(
-        Credentials("elastic", "Qex-+JtMxqNDgH3G073d"),
-        Address("localhost", 9200),
-        "search"
+        Credentials("elastic", ""), Address("localhost", 9200), "search"
     )
 
-    es.searchAfterUrl(10, null, listOf("address.url")).hits().hits().forEach {
-        println(it.source()?.address?.url)
-    }
-//    println(a?.size)
+
     println("done")
 
 }
