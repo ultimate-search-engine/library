@@ -18,9 +18,9 @@ class PageRepository {
 
 
     abstract class Client {
-        abstract suspend fun find(url: String): List<Page>
+        abstract suspend fun find(url: String): Page?
         abstract suspend fun findTarget(url: String): List<Page>
-        abstract suspend fun findAfter(url: String?, limit: Int = 200, code: Int? = null): List<Page>
+        abstract suspend fun findAfter(url: String?, limit: Int = 200): List<Page>
 
         abstract suspend fun add(page: Page)
 
@@ -36,7 +36,7 @@ class PageRepository {
         private val database = client.getDatabase(db)
         private val col = database.getCollection<Page>()
 
-        override suspend fun find(url: String): List<Page> = col.find((Page::finalUrl) eq (url)).toList()
+        override suspend fun find(url: String): Page? = col.find((Page::finalUrl) eq (url)).toList().firstOrNull()
 
         override suspend fun findTarget(url: String): List<Page> = col.find(Page::targetUrl contains (url)).toList()
 
@@ -51,13 +51,10 @@ class PageRepository {
             col.updateOne(Page::finalUrl eq page.finalUrl, page)
         }
 
-        override suspend fun findAfter(url: String?, limit: Int, code: Int?): List<Page> {
+        override suspend fun findAfter(url: String?, limit: Int): List<Page> {
             val firstUrl = url ?: ""
             return col.find(
-                if (code == null) Page::finalUrl gt firstUrl else and(
-                    Page::finalUrl gt firstUrl,
-                    Page::statusCode eq code
-                )
+                Page::finalUrl gt firstUrl
             ).limit(limit).toList()
         }
     }

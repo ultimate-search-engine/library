@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 class Page {
     @Serializable
     data class Page (
-        val url: String,
+        val url: Address,
         val ranks: Ranks,
         val content: Content,
     )
@@ -37,6 +37,20 @@ class Page {
     data class Ranks(
         val pagerank: Double,
         val smartRank: Double,
+
+        val urlLength: Int,
+        val urlPathLength: Int,
+        val urlSegmentsCount: Int,
+        val urlParameterCount: Int,
+        val urlParameterCountUnique: Int,
+        val urlParameterCountUniquePercent: Double,
+        )
+
+    @Serializable
+    data class Address(
+        val url: String,
+        val urlPathKeywords: List<String>,
+        val hostName: String
     )
 }
 

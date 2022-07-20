@@ -193,6 +193,15 @@ open class Elastic(credentials: Credentials, address: Address, private val index
             })
         }
 
+        fun Property.Builder.pnRankComplex() = this.double_ { double_ ->
+            double_.fields("positive", Property.of { field ->
+                field.rankFeature { it.positiveScoreImpact(true) }
+            })
+            double_.fields("negative", Property.of { field ->
+                field.rankFeature { it.positiveScoreImpact(false) }
+            })
+        }
+
 //        fun objectMapping(name: String, parent: ObjectProperty.Builder, f: (ObjectProperty.Builder) -> ObjectProperty.Builder): ObjectProperty.Builder = typeMappingProperty(parent, name) { property ->
 //            objectProperty(property, f)
 //        }
@@ -217,13 +226,24 @@ open class Elastic(credentials: Credentials, address: Address, private val index
 //                }
             }
             indexRequest.mappings(TypeMapping.of { typeMapping ->
-                typeMapping.field("url") {
-                    it.keyword()
+                typeMapping.field("url") { url ->
+                    url.objectProperty { op ->
+                        op.field("url") { it.keyword() }
+                        op.field("urlPathKeywords") { it.text() }
+                        op.field("hostName") { it.text() }
+                    }
                 }
                 typeMapping.field("ranks") { ranks ->
                     ranks.objectProperty { op ->
                         op.field("pagerank") { it.rankComplex() }
                         op.field("smartRank") { it.rankComplex() }
+
+                        op.field("urlLength") { it.pnRankComplex() }
+                        op.field("urlPathLength") { it.pnRankComplex() }
+                        op.field("urlSegmentsCount") { it.pnRankComplex() }
+                        op.field("urlParameterCount") { it.pnRankComplex() }
+                        op.field("urlParameterCountUnique") { it.pnRankComplex() }
+                        op.field("urlParameterCountUniquePercent") { it.rankComplex() }
                     }
                 }
                 typeMapping.field("content") { content ->
