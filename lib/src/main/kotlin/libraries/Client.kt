@@ -1,8 +1,17 @@
 package libraries
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.channels.produce
+import kotlinx.coroutines.delay
 import org.litote.kmongo.*
 import org.litote.kmongo.coroutine.coroutine
 import org.litote.kmongo.reactivestreams.KMongo
+import kotlin.math.roundToInt
+import kotlin.time.ExperimentalTime
+import kotlin.time.TimedValue
+import kotlin.time.measureTimedValue
 
 
 class PageRepository {
@@ -20,7 +29,7 @@ class PageRepository {
     abstract class Client {
         abstract suspend fun find(url: String): Page?
         abstract suspend fun findTarget(url: String): List<Page>
-        abstract suspend fun findAfter(url: String?, limit: Int = 200): List<Page>
+        abstract suspend fun findAfter(url: String?, limit: Int = 200, includeBody: Boolean = true): List<Page>
 
         abstract suspend fun add(page: Page)
 
@@ -31,10 +40,10 @@ class PageRepository {
 
 
     @Suppress("Unused")
-    class MongoClient(db: String, location: String = "mongodb://localhost:27017") : Client() {
+    class MongoClient(db: String, location: String = "mongodb://localhost:27017", collectionName: String? = null) : Client() {
         private val client = KMongo.createClient(location).coroutine
         private val database = client.getDatabase(db)
-        private val col = database.getCollection<Page>()
+        private val col = if (collectionName == null) database.getCollection<Page>() else database.getCollection(collectionName)
 
         override suspend fun find(url: String): Page? = col.find((Page::finalUrl) eq (url)).toList().firstOrNull()
 
@@ -51,12 +60,13 @@ class PageRepository {
             col.updateOne(Page::finalUrl eq page.finalUrl, page)
         }
 
-        override suspend fun findAfter(url: String?, limit: Int): List<Page> {
+        override suspend fun findAfter(url: String?, limit: Int, includeBody: Boolean): List<Page> {
             val firstUrl = url ?: ""
             return col.find(
                 Page::finalUrl gt firstUrl
             ).limit(limit).toList()
         }
+
     }
 }
 

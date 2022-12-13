@@ -244,6 +244,7 @@ open class Elastic(credentials: Credentials, address: Address, private val index
                         op.field("urlParameterCount") { it.pnRankComplex() }
                         op.field("urlParameterCountUnique") { it.pnRankComplex() }
                         op.field("urlParameterCountUniquePercent") { it.rankComplex() }
+                        op.field("totalUrlDocs") { it.pnRankComplex() }
                     }
                 }
                 typeMapping.field("content") { content ->
